@@ -73,6 +73,11 @@ typedef enum {
 } format_t;
 
 typedef enum {
+    LEFT,
+    RIGHT
+} channel_t;
+
+typedef enum {
     BLOCKING,
     NON_BLOCKING,
     ASYNCIO
@@ -89,6 +94,8 @@ enum {
     ARG_mode,
     ARG_bits,
     ARG_format,
+    ARG_channel,
+    ARG_oversample,
     ARG_rate,
     ARG_ibuf,
 };
@@ -343,17 +350,28 @@ static void copy_appbuf_to_ringbuf_non_blocking(machine_i2s_obj_t *self) {
 
 MP_NOINLINE static void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
     static const mp_arg_t allowed_args[] = {
-        { MP_QSTR_sck,      MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ,   {.u_obj = MP_OBJ_NULL} },
-        { MP_QSTR_ws,       MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ,   {.u_obj = MP_OBJ_NULL} },
-        { MP_QSTR_sd,       MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ,   {.u_obj = MP_OBJ_NULL} },
-        #if MICROPY_PY_MACHINE_I2S_MCK
-        { MP_QSTR_mck,      MP_ARG_KW_ONLY | MP_ARG_OBJ,   {.u_obj = mp_const_none} },
+        { MP_QSTR_sck,        MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ,   {.u_obj = MP_OBJ_NULL} },
+        #if MICROPY_PY_MACHINE_PDM
+        { MP_QSTR_ws,         MP_ARG_KW_ONLY | MP_ARG_OBJ,   {.u_obj = mp_const_none} },
+        #else
+        { MP_QSTR_ws,         MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ,   {.u_obj = MP_OBJ_NULL} },
         #endif
-        { MP_QSTR_mode,     MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
-        { MP_QSTR_bits,     MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
-        { MP_QSTR_format,   MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
-        { MP_QSTR_rate,     MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
-        { MP_QSTR_ibuf,     MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
+        { MP_QSTR_sd,         MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ,   {.u_obj = MP_OBJ_NULL} },
+        #if MICROPY_PY_MACHINE_I2S_MCK
+        { MP_QSTR_mck,        MP_ARG_KW_ONLY | MP_ARG_OBJ,   {.u_obj = mp_const_none} },
+        #endif
+        { MP_QSTR_mode,       MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
+        { MP_QSTR_bits,       MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
+        { MP_QSTR_format,     MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
+        #if MICROPY_PY_MACHINE_PDM
+        { MP_QSTR_channel,    MP_ARG_KW_ONLY | MP_ARG_INT,   {.u_int = LEFT} },
+        { MP_QSTR_oversample, MP_ARG_KW_ONLY | MP_ARG_INT,   {.u_int = 64} },
+        #else
+        { MP_QSTR_channel,    MP_ARG_KW_ONLY | MP_ARG_INT,   {.u_int = -1} },
+        { MP_QSTR_oversample, MP_ARG_KW_ONLY | MP_ARG_INT,   {.u_int = -1} },
+        #endif
+        { MP_QSTR_rate,       MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
+        { MP_QSTR_ibuf,       MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
     };
 
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
@@ -372,7 +390,10 @@ static void machine_i2s_print(const mp_print_t *print, mp_obj_t self_in, mp_prin
         "mck="MP_HAL_PIN_FMT ",\n"
         #endif
         "mode=%u,\n"
-        "bits=%u, format=%u,\n"
+        "bits=%u, format=%u,\n",
+        #if MICROPY_PY_MACHINE_PDM
+        "channel=%u,\n",
+        #endif
         "rate=%d, ibuf=%d)",
         self->i2s_id,
         mp_hal_pin_name(self->sck),
@@ -383,6 +404,9 @@ static void machine_i2s_print(const mp_print_t *print, mp_obj_t self_in, mp_prin
         #endif
         self->mode,
         self->bits, self->format,
+        #if MICROPY_PY_MACHINE_PDM
+        self->channel,
+        #endif
         self->rate, self->ibuf
         );
 }
@@ -517,18 +541,31 @@ static const mp_rom_map_elem_t machine_i2s_locals_dict_table[] = {
     // Constants
     { MP_ROM_QSTR(MP_QSTR_RX),              MP_ROM_INT(MICROPY_PY_MACHINE_I2S_CONSTANT_RX) },
     { MP_ROM_QSTR(MP_QSTR_TX),              MP_ROM_INT(MICROPY_PY_MACHINE_I2S_CONSTANT_TX) },
+    #if MICROPY_PY_MACHINE_PDM
+    { MP_ROM_QSTR(MP_QSTR_PDM_RX),          MP_ROM_INT(MICROPY_PY_MACHINE_I2S_PDM_RX) },
+    #endif
     { MP_ROM_QSTR(MP_QSTR_STEREO),          MP_ROM_INT(STEREO) },
     { MP_ROM_QSTR(MP_QSTR_MONO),            MP_ROM_INT(MONO) },
+    { MP_ROM_QSTR(MP_QSTR_LEFT),            MP_ROM_INT(LEFT) },
+    { MP_ROM_QSTR(MP_QSTR_RIGHT),           MP_ROM_INT(RIGHT) },
 };
 MP_DEFINE_CONST_DICT(machine_i2s_locals_dict, machine_i2s_locals_dict_table);
 
 static mp_uint_t machine_i2s_stream_read(mp_obj_t self_in, void *buf_in, mp_uint_t size, int *errcode) {
     machine_i2s_obj_t *self = MP_OBJ_TO_PTR(self_in);
 
+    #if MICROPY_PY_MACHINE_PDM
+    if ((self->mode != MICROPY_PY_MACHINE_I2S_CONSTANT_RX) &&
+        (self->mode != MICROPY_PY_MACHINE_I2S_PDM_RX)) {
+        *errcode = MP_EPERM;
+        return MP_STREAM_ERROR;
+    }
+    #else
     if (self->mode != MICROPY_PY_MACHINE_I2S_CONSTANT_RX) {
         *errcode = MP_EPERM;
         return MP_STREAM_ERROR;
     }
+    #endif
 
     uint8_t appbuf_sample_size_in_bytes = (self->bits / 8) * (self->format == STEREO ? 2: 1);
     if (size % appbuf_sample_size_in_bytes != 0) {
@@ -623,10 +660,18 @@ static mp_uint_t machine_i2s_ioctl(mp_obj_t self_in, mp_uint_t request, uintptr_
         ret = 0;
 
         if (flags & MP_STREAM_POLL_RD) {
+            #if MICROPY_PY_MACHINE_PDM
+            if ((self->mode != MICROPY_PY_MACHINE_I2S_CONSTANT_RX) &&
+                (self->mode != MICROPY_PY_MACHINE_I2S_PDM_RX)) {
+                *errcode = MP_EPERM;
+                return MP_STREAM_ERROR;
+            }
+            #else
             if (self->mode != MICROPY_PY_MACHINE_I2S_CONSTANT_RX) {
                 *errcode = MP_EPERM;
                 return MP_STREAM_ERROR;
             }
+            #endif
 
             #if MICROPY_PY_MACHINE_I2S_RING_BUF
             if (!ringbuf_is_empty(&self->ring_buffer)) {
